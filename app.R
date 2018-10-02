@@ -115,26 +115,19 @@ ui <- fluidPage(
                        
                        br(),
                        fluidRow(
-                         column(width = 5, 
-                                uiOutput("indiventory"),
-                                uiOutput("choose_string_ind")
+                         column(width = 4, 
+                                uiOutput("indiventory")
                          ),
                          column(width = 4,
-                                #uiOutput("filters2"),
-                                br()),
-                         column(width = 3, 
-                                uiOutput("database2"))
+                                uiOutput("database2"),
+                                uiOutput("string_to_check2")
+                                ),
+                         column(width = 4, 
+                                uiOutput("downloadData_ind")
+                                )
                        ),
                        
                        hr(),
-                       fluidRow(
-                         column(width = 6, 
-                                uiOutput("string_to_check2")
-                                ),
-                         column(width = 6, 
-                                uiOutput("downloadData_ind")
-                         )
-                       ),
                        
                        fluidRow(
                          column(width = 4, 
@@ -878,7 +871,7 @@ server <- function(input, output, session) {
     tagList(
       #numericInput("sheet_barcode_ind", "sheet_barcode", value = 0),
       textInput("precise_locality_ind", "precise_locality"),
-      numericInput("coll_year_from_ind", "coll_year_from", value = as.integer(format(Sys.Date(), "%Y")), min = 1750, max = as.integer(format(Sys.Date(), "%Y"))),
+      numericInput("coll_year_from_ind", "coll_year_from", value = "", min = 1750, max = as.integer(format(Sys.Date(), "%Y"))),
       textInput("collector_1_ind", "collector_1"),
       textInput("country_ind", "country"),
 
@@ -892,14 +885,7 @@ server <- function(input, output, session) {
     #save input to vector
     ind_input <<- c(precise_locality = input$precise_locality_ind, coll_year_from = input$coll_year_from_ind, collector_1 = input$collector_1_ind, country = input$country_ind)
     
-    output$choose_string_ind <- renderUI({
-    
-      flog.info(paste0("sheet_barcode: ind_entry"), name = "locations")
-      flog.info(paste0("precise_locality: ", ind_input['precise_locality']), name = "locations")
-      
-      p(paste("Location to match: ", ind_input['precise_locality']))
-    })
-    
+
 
 
     # Which DB2 ----
@@ -938,7 +924,7 @@ server <- function(input, output, session) {
     
     
     
-    # downloadData ----
+    # downloadData_ind ----
     output$downloadData_ind <- renderUI({
 
       res <- ""
@@ -972,7 +958,7 @@ server <- function(input, output, session) {
           score <- results2[row_sel2, 4]
         }
         method <- "dl"
-      }else if(!is.null(input$table3_rows_selected)){
+      }else if(!is.null(input$table3_2_rows_selected)){
         row_sel3 <- input$table3_2_rows_selected
         if (input$db_to_use2 == "NMNH"){
           res <- results3[row_sel3, 1]
