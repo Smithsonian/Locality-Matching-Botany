@@ -42,3 +42,8 @@ data
 
 *.Rproj
 
+!data/create_nmnh_db.R
+!data/create_gbif_db.R
+
+!data/nmnh_empty.sqlite
+!data/gbif_empty.sqlite
