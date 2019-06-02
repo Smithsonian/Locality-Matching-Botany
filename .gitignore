@@ -47,3 +47,5 @@ data
 
 !data/nmnh_empty.sqlite
 !data/gbif_empty.sqlite
+
+settings.R

@@ -8,6 +8,8 @@ library(stringdist)
 library(futile.logger)
 library(countrycode)
 library(httr)
+library(EDANr)
+library(parallel)
 
 
 
@@ -36,6 +38,7 @@ unknownlocs <- TRUE
 ids_url = "http://ids-internal.si.edu/ids/dynamic?id="
 ids_prefix = "NMNH-"
 
+source("settings.R")
 
 csv_database <- paste0("data/csv_", format(Sys.time(), "%Y%m%d%H%M%S"), ".sqlite3")
 
@@ -72,6 +75,36 @@ ui <- fluidPage(
   titlePanel(app_name),
   
   tabsetPanel(type = "tabs",
+              tabPanel("EDAN Search",  
+                       br(),
+                       fluidRow(
+                         column(width = 4, 
+                                uiOutput("edansearch")
+                         ),
+                         column(width = 4,
+                                uiOutput("string_to_check_edan")
+                         ),
+                         column(width = 4, 
+                                uiOutput("downloadData_edan")
+                         )
+                       ),
+                       
+                       hr(),
+                       
+                       fluidRow(
+                         column(width = 4, 
+                                DT::dataTableOutput("table1_edan")
+                         ),
+                         column(width = 4, 
+                                DT::dataTableOutput("table2_edan")
+                         ),
+                         column(width = 4,
+                                DT::dataTableOutput("table3_edan")
+                         )
+                       )
+                       
+                       
+              ),
               tabPanel("CSV",  
                        br(),
                        fluidRow(
@@ -143,6 +176,7 @@ ui <- fluidPage(
                        
                        
                        ),
+              
               tabPanel("Help",  
                        br(),
                        fluidRow(
@@ -1013,8 +1047,6 @@ server <- function(input, output, session) {
         tagList(
           HTML("<div class=\"panel panel-success\"> <div class=\"panel-heading\"> <h3 class=\"panel-title\">Result selected</h3> </div> <div class=\"panel-body\">"),
           pre(paste0("Locality: ", res, "\nCountry: ", res_country, "\nCollector: ", res_collector,"\nMethod (and score): ", method, " (", score, ")\nNo. of records: ", no_records)),
-          # Save button
-          #actionButton("saverow", "Save this location", class = "btn btn-primary", icon = icon("ok", lib = "glyphicon")),
           HTML("</div></div>")
           
         )
@@ -1433,6 +1465,143 @@ server <- function(input, output, session) {
          </div></div>")
   })
   
+  
+  
+  
+  #EDAN----
+  # edansearch ----
+  output$edansearch <- renderUI({
+    tagList(
+      textInput("locality_edan", "Locality string"),
+      textInput("species_edan", "Scientific name"),
+      textInput("country_edan", "Country"),
+      actionButton("submit_edan", "Submit")
+    )
+  })
+  
+  
+  
+  # Ind query react ----
+  observeEvent(input$submit_edan, {
+    
+    #save input to vector
+    edan_input <<- c(locality_edan = input$locality_edan, species_edan = input$species_edan, country_edan = input$country_edan)
+    
+    
+    
+    
+    
+    
+    # string_to_check_edan ----
+    output$string_to_check_edan <- renderUI({
+      
+      HTML(paste0("<div class=\"panel panel-primary\"><div class=\"panel-heading\"><h3 class=\"panel-title\">Row data</h3></div><div class=\"panel-body\"><dl class=\"dl-horizontal\"><dt>Locality</dt><dd>", edan_input['locality_edan'], "</dd><dt>Species</dt><dd>", edan_input['species_edan'], "</dd><dt>Country</dt><dd>", edan_input['country_edan'], "</dd></dl></div></div>"))
+      
+    })
+    
+    
+    
+    
+    
+    
+    # Table 1_edan ----
+    output$table1_edan <- DT::renderDataTable({
+      req(edan_input['locality_edan'])
+      
+      #Progress bar
+      progress0 <- shiny::Progress$new()
+      on.exit(progress0$close())
+      
+      progress0$set(message = 'Querying EDAN for candidate matches...', value = 0.3)
+      
+      cat(edan_input['species_edan'])
+      res1 <- searchEDAN(query = paste0(URLencode(edan_input['species_edan']), "&fq=online_media_type%3A%22Images%22&fq=data_source:%22NMNH+-+Botany+Dept.%22"), AppID = AppID, AppKey = AppKey, rows = 1)
+      
+      no_rows <- res1$rowCount
+      
+      if (no_rows > 1000){
+        no_rows = 1000
+      }
+      
+      cat(no_rows)
+      
+      #parallel
+      searchEDAN_parallel <-function(i){
+        library(EDANr)
+        res <- searchEDAN(query = paste0(URLencode(edan_input['species_edan']), "&fq=online_media_type%3A%22Images%22&fq=data_source:%22NMNH+-+Botany+Dept.%22"), AppID = AppID, AppKey = AppKey, start = (i*100) + 1, rows = 100)
+        return(res)
+      }
+      
+      
+      # Calculate the number of cores, if not in settings
+      if (!exists("no_cores")){
+        no_cores <- detectCores() - 1
+      }
+      # Initiate cluster
+      cl <- makeCluster(no_cores)
+      
+      #Export data to cluster
+      clusterExport(cl=cl, varlist=c("edan_input", "AppID", "AppKey"), envir=environment())
+      
+      no_rows_p <- floor(no_rows/100)
+      
+      res <- parLapply(cl, seq(0, no_rows_p), searchEDAN_parallel)
+      
+      #stop cluster
+      stopCluster(cl)
+      
+      results <- vector()
+      r = 1
+      for (i in seq(1, no_rows_p + 1)){
+        for (j in seq(1, length(res[[i]]$content$freetext$place))){
+          if (!is.null(res[[i]]$content$freetext$place[[j]]$content)){
+            results[r] <- res[[i]]$content$freetext$place[[j]]$content
+            r = r + 1
+          }
+        }
+      }
+      
+      places <<- dplyr::distinct(as.data.frame(results))
+      
+      loc_match <- find_matching_str2(edan_input['locality_edan'], places, method = "osa", no_cores = this_cpu_cores)
+        match_results <- data.frame(match = loc_match$match, score = as.numeric(loc_match$score), stringsAsFactors = FALSE)
+        results_filtered <- dplyr::filter(match_results, score < 10)
+        results_edan1 <<- results_filtered[order(results_filtered$score),]
+        
+        DT::datatable(results_edan1, escape = FALSE, options = list(searching = FALSE, ordering = FALSE, pageLength = 15, paging = FALSE, language = list(zeroRecords = "No matches found")), rownames = FALSE, selection = 'single', caption = "Method: osa", colnames = c('String matched', 'Score (lower is better)'))
+        
+    })
+    
+    
+    
+    
+    # Table 2_edan ----
+    output$table2_edan <- DT::renderDataTable({
+      
+      loc_match <- find_matching_str2(edan_input['locality_edan'], places, method = "dl", no_cores = this_cpu_cores)
+      match_results <- data.frame(match = loc_match$match, score = as.numeric(loc_match$score), stringsAsFactors = FALSE)
+      results_filtered <- dplyr::filter(match_results, score < 10)
+      results_edan2 <<- results_filtered[order(results_filtered$score),]
+
+      DT::datatable(results_edan2, escape = FALSE, options = list(searching = FALSE, ordering = FALSE, pageLength = 15, paging = FALSE, language = list(zeroRecords = "No matches found")), rownames = FALSE, selection = 'single', caption = "Method: dl", colnames = c('String matched', 'Score (lower is better)'))
+      
+      
+    })
+    
+    
+    
+    # Table 3_edan ----
+    output$table3_edan <- DT::renderDataTable({
+      
+      loc_match <- find_matching_str2(edan_input['locality_edan'], places, method = "jw", no_cores = this_cpu_cores)
+      match_results <- data.frame(match = loc_match$match, score = as.numeric(loc_match$score), stringsAsFactors = FALSE)
+      results_filtered <- dplyr::filter(match_results, score < 0.5)
+      results_edan3 <<- results_filtered[order(results_filtered$score),]
+      
+      DT::datatable(results_edan3, escape = FALSE, options = list(searching = FALSE, ordering = FALSE, pageLength = 15, paging = FALSE, language = list(zeroRecords = "No matches found")), rownames = FALSE, selection = 'single', caption = "Method: jw", colnames = c('String matched', 'Score (lower is better)'))
+      
+    })
+  })
   
 }
 
