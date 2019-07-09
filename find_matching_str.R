@@ -52,7 +52,7 @@ find_matching_str2 <- function(str_to_check, database, method = "osa", no_cores 
     }
     
     #Add string to scores
-    results <- cbind(database, str_matches)
+    results <- data.frame(cbind(database, str_matches))
     
     names(results) <- c("match", "score")
     

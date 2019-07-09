@@ -10,7 +10,8 @@ library(countrycode)
 library(httr)
 library(EDANr)
 library(parallel)
-
+library(jsonlite)
+library(httr)
 
 
 # Settings -----------------------------------------------------------
@@ -22,7 +23,7 @@ this_cpu_cores <- 2
 options(shiny.maxRequestSize=10*1024^2)
 
 app_name <- "Locality Matching"
-app_ver <- "0.6.0"
+app_ver <- "0.7.0"
 github_link <- "https://github.com/Smithsonian/Locality-Matching-Botany"
 
 options(stringsAsFactors = FALSE)
@@ -75,7 +76,7 @@ ui <- fluidPage(
   titlePanel(app_name),
   
   tabsetPanel(type = "tabs",
-              tabPanel("EDAN Search",  
+              tabPanel("Ind Search",  
                        br(),
                        fluidRow(
                          column(width = 4, 
@@ -918,10 +919,8 @@ server <- function(input, output, session) {
     
     #save input to vector
     ind_input <<- c(precise_locality = input$precise_locality_ind, coll_year_from = input$coll_year_from_ind, collector_1 = input$collector_1_ind, country = input$country_ind)
+
     
-
-
-
     # Which DB2 ----
     output$which_db2 <- renderUI({
       choices <- list()
@@ -944,7 +943,6 @@ server <- function(input, output, session) {
     
 
 
-
     # string_to_check2 ----
     output$string_to_check2 <- renderUI({
             
@@ -953,11 +951,6 @@ server <- function(input, output, session) {
     })
 
 
-    
-    
-    
-    
-    
     # downloadData_ind ----
     output$downloadData_ind <- renderUI({
 
@@ -1474,7 +1467,6 @@ server <- function(input, output, session) {
     tagList(
       textInput("locality_edan", "Locality string"),
       textInput("species_edan", "Scientific name"),
-      textInput("country_edan", "Country"),
       actionButton("submit_edan", "Submit")
     )
   })
@@ -1483,92 +1475,87 @@ server <- function(input, output, session) {
   
   # Ind query react ----
   observeEvent(input$submit_edan, {
+  
+    source("find_matching_str.R")
+    
+    shiny::validate(
+      need(input$locality_edan != '', 'The locality can not be empty'),
+      need(input$species_edan != '', 'The scientific name can not be empty')
+    )
     
     #save input to vector
     edan_input <<- c(locality_edan = input$locality_edan, species_edan = input$species_edan, country_edan = input$country_edan)
     
     
-    
-    
-    
-    
     # string_to_check_edan ----
     output$string_to_check_edan <- renderUI({
       
-      HTML(paste0("<div class=\"panel panel-primary\"><div class=\"panel-heading\"><h3 class=\"panel-title\">Row data</h3></div><div class=\"panel-body\"><dl class=\"dl-horizontal\"><dt>Locality</dt><dd>", edan_input['locality_edan'], "</dd><dt>Species</dt><dd>", edan_input['species_edan'], "</dd><dt>Country</dt><dd>", edan_input['country_edan'], "</dd></dl></div></div>"))
+      HTML(paste0("<div class=\"panel panel-primary\"><div class=\"panel-heading\"><h3 class=\"panel-title\">Row data</h3></div><div class=\"panel-body\"><dl class=\"dl-horizontal\"><dt>Locality</dt><dd>", edan_input['locality_edan'], "</dd><dt>Scientific name</dt><dd>", edan_input['species_edan'], "</dd></dl></div></div>"))
       
     })
     
     
+    #Progress bar
+    progress0 <- shiny::Progress$new()
+    on.exit(progress0$close())
     
+    progress0$set(message = 'Querying EDAN for candidate matches...', value = 0.4)
     
+    cat(edan_input['species_edan'])
     
+    req <- httr::GET(url = URLencode(paste0(api_url_edan, edan_input['species_edan'])),
+                     httr::add_headers(
+                       "X-Api-Key" = app_api_key
+                     )
+    )
+    #cat(httr::content(req, as = "text"))
+    print(req)
+    
+    if (req$status_code == 200){
+      places1 <- as.data.frame(fromJSON(httr::content(req, as = "text", encoding = "UTF-8")))
+    }else{
+      places1 <- NA
+    }
+    
+    names(places1) <- 'locality'
+    
+    progress0$set(message = 'Querying GBIF for candidate matches...', value = 0.7)
+    
+    req2 <- httr::GET(url = URLencode(paste0(api_url_gbif, edan_input['species_edan'])),
+                     httr::add_headers(
+                       "X-Api-Key" = app_api_key
+                     )
+    )
+    #cat(httr::content(req2, as = "text"))
+    print(req2)
+    
+    if (req2$status_code == 200){
+      places2 <- fromJSON(httr::content(req2, as = "text", encoding = "UTF-8"))
+    }else{
+      places2 <- NA
+    }
+    
+    #places <<- dplyr::union(places1, places2)
+    
+    progress0$set(message = 'Finding matches...', value = 0.9)
     
     # Table 1_edan ----
     output$table1_edan <- DT::renderDataTable({
-      req(edan_input['locality_edan'])
       
-      #Progress bar
-      progress0 <- shiny::Progress$new()
-      on.exit(progress0$close())
+      loc_match <- find_matching_str2(edan_input['locality_edan'], places1, method = "osa", no_cores = this_cpu_cores)
+      match_results <- data.frame(match = loc_match$match, source = 'EDAN', score = as.numeric(loc_match$score), stringsAsFactors = FALSE)
+      results_filtered <- dplyr::filter(match_results, score < 20)
+      results_edan11 <- results_filtered[order(results_filtered$score),]
       
-      progress0$set(message = 'Querying EDAN for candidate matches...', value = 0.3)
+      loc_match <- find_matching_str2(edan_input['locality_edan'], places2, method = "osa", no_cores = this_cpu_cores)
+      match_results <- data.frame(match = loc_match$match, source = 'GBIF', score = as.numeric(loc_match$score), stringsAsFactors = FALSE)
+      results_filtered <- dplyr::filter(match_results, score < 20)
+      results_edan12 <- results_filtered[order(results_filtered$score),]
       
-      cat(edan_input['species_edan'])
-      res1 <- searchEDAN(query = paste0(URLencode(edan_input['species_edan']), "&fq=online_media_type%3A%22Images%22&fq=data_source:%22NMNH+-+Botany+Dept.%22"), AppID = AppID, AppKey = AppKey, rows = 1)
+      #results_edan1 <<- dplyr::union(results_edan11, results_edan12)
+      results_edan1 <<- dplyr::arrange(dplyr::union(results_edan11, results_edan12), score)
       
-      no_rows <- res1$rowCount
-      
-      if (no_rows > 1000){
-        no_rows = 1000
-      }
-      
-      cat(no_rows)
-      
-      #parallel
-      searchEDAN_parallel <-function(i){
-        library(EDANr)
-        res <- searchEDAN(query = paste0(URLencode(edan_input['species_edan']), "&fq=online_media_type%3A%22Images%22&fq=data_source:%22NMNH+-+Botany+Dept.%22"), AppID = AppID, AppKey = AppKey, start = (i*100) + 1, rows = 100)
-        return(res)
-      }
-      
-      
-      # Calculate the number of cores, if not in settings
-      if (!exists("no_cores")){
-        no_cores <- detectCores() - 1
-      }
-      # Initiate cluster
-      cl <- makeCluster(no_cores)
-      
-      #Export data to cluster
-      clusterExport(cl=cl, varlist=c("edan_input", "AppID", "AppKey"), envir=environment())
-      
-      no_rows_p <- floor(no_rows/100)
-      
-      res <- parLapply(cl, seq(0, no_rows_p), searchEDAN_parallel)
-      
-      #stop cluster
-      stopCluster(cl)
-      
-      results <- vector()
-      r = 1
-      for (i in seq(1, no_rows_p + 1)){
-        for (j in seq(1, length(res[[i]]$content$freetext$place))){
-          if (!is.null(res[[i]]$content$freetext$place[[j]]$content)){
-            results[r] <- res[[i]]$content$freetext$place[[j]]$content
-            r = r + 1
-          }
-        }
-      }
-      
-      places <<- dplyr::distinct(as.data.frame(results))
-      
-      loc_match <- find_matching_str2(edan_input['locality_edan'], places, method = "osa", no_cores = this_cpu_cores)
-        match_results <- data.frame(match = loc_match$match, score = as.numeric(loc_match$score), stringsAsFactors = FALSE)
-        results_filtered <- dplyr::filter(match_results, score < 10)
-        results_edan1 <<- results_filtered[order(results_filtered$score),]
-        
-        DT::datatable(results_edan1, escape = FALSE, options = list(searching = FALSE, ordering = FALSE, pageLength = 15, paging = FALSE, language = list(zeroRecords = "No matches found")), rownames = FALSE, selection = 'single', caption = "Method: osa", colnames = c('String matched', 'Score (lower is better)'))
+        DT::datatable(results_edan1, escape = FALSE, options = list(searching = FALSE, ordering = FALSE, pageLength = 15, paging = FALSE, language = list(zeroRecords = "No matches found")), rownames = FALSE, selection = 'single', caption = "Method: osa", colnames = c('String matched', 'Source', 'Score (lower is better)'))
         
     })
     
@@ -1578,12 +1565,19 @@ server <- function(input, output, session) {
     # Table 2_edan ----
     output$table2_edan <- DT::renderDataTable({
       
-      loc_match <- find_matching_str2(edan_input['locality_edan'], places, method = "dl", no_cores = this_cpu_cores)
+      loc_match <- find_matching_str2(edan_input['locality_edan'], places1, method = "dl", no_cores = this_cpu_cores)
       match_results <- data.frame(match = loc_match$match, score = as.numeric(loc_match$score), stringsAsFactors = FALSE)
-      results_filtered <- dplyr::filter(match_results, score < 10)
-      results_edan2 <<- results_filtered[order(results_filtered$score),]
-
-      DT::datatable(results_edan2, escape = FALSE, options = list(searching = FALSE, ordering = FALSE, pageLength = 15, paging = FALSE, language = list(zeroRecords = "No matches found")), rownames = FALSE, selection = 'single', caption = "Method: dl", colnames = c('String matched', 'Score (lower is better)'))
+      results_filtered <- dplyr::filter(match_results, score < 20)
+      results_edan21 <- results_filtered[order(results_filtered$score),]
+      
+      loc_match <- find_matching_str2(edan_input['locality_edan'], places2, method = "dl", no_cores = this_cpu_cores)
+      match_results <- data.frame(match = loc_match$match, score = as.numeric(loc_match$score), stringsAsFactors = FALSE)
+      results_filtered <- dplyr::filter(match_results, score < 20)
+      results_edan22 <- results_filtered[order(results_filtered$score),]
+      
+      results_edan2 <<- dplyr::arrange(dplyr::union(results_edan21, results_edan22), score)
+      
+      DT::datatable(results_edan2, escape = FALSE, options = list(searching = FALSE, ordering = FALSE, pageLength = 15, paging = FALSE, language = list(zeroRecords = "No matches found")), rownames = FALSE, selection = 'single', caption = "Method: dl", colnames = c('String matched', 'Source', 'Score (lower is better)'))
       
       
     })
@@ -1595,10 +1589,54 @@ server <- function(input, output, session) {
       
       loc_match <- find_matching_str2(edan_input['locality_edan'], places, method = "jw", no_cores = this_cpu_cores)
       match_results <- data.frame(match = loc_match$match, score = as.numeric(loc_match$score), stringsAsFactors = FALSE)
-      results_filtered <- dplyr::filter(match_results, score < 0.5)
-      results_edan3 <<- results_filtered[order(results_filtered$score),]
+      results_filtered <- dplyr::filter(match_results, score < 0.3)
+      results_edan31 <- results_filtered[order(results_filtered$score),]
+      results_edan31['score'] <- round(results_edan31['score'], digits = 4)
       
-      DT::datatable(results_edan3, escape = FALSE, options = list(searching = FALSE, ordering = FALSE, pageLength = 15, paging = FALSE, language = list(zeroRecords = "No matches found")), rownames = FALSE, selection = 'single', caption = "Method: jw", colnames = c('String matched', 'Score (lower is better)'))
+      loc_match <- find_matching_str2(edan_input['locality_edan'], places, method = "jw", no_cores = this_cpu_cores)
+      match_results <- data.frame(match = loc_match$match, score = as.numeric(loc_match$score), stringsAsFactors = FALSE)
+      results_filtered <- dplyr::filter(match_results, score < 0.3)
+      results_edan32 <- results_filtered[order(results_filtered$score),]
+      results_edan32['score'] <- round(results_edan32['score'], digits = 4)
+      
+      results_edan3 <<- dplyr::arrange(dplyr::union(results_edan31, results_edan32), score)
+      
+      DT::datatable(results_edan3, escape = FALSE, options = list(searching = FALSE, ordering = FALSE, pageLength = 15, paging = FALSE, language = list(zeroRecords = "No matches found")), rownames = FALSE, selection = 'single', caption = "Method: jw", colnames = c('String matched', 'Source', 'Score (lower is better)'))
+      
+    })
+
+
+    # downloadData_edan ----
+    output$downloadData_edan <- renderUI({
+      
+      res <- ""
+      #cat(input$table3_edan_rows_selected)
+      if(!is.null(input$table1_edan_rows_selected)){
+        row_sel <- input$table1_edan_rows_selected
+        res <- results_edan1[row_sel, 1]
+        score <- results_edan1[row_sel, 3]
+        method <- "osa"
+      }else if(!is.null(input$table2_edan_rows_selected)){
+        row_sel2 <- input$table2_edan_rows_selected
+        res <- results_edan2[row_sel2, 1]
+        score <- results_edan2[row_sel2, 3]
+        method <- "dl"
+      }else if(!is.null(input$table3_edan_rows_selected)){
+        row_sel3 <- input$table3_edan_rows_selected
+        res <- results_edan3[row_sel3, 1]
+        score <- results_edan3[row_sel3, 3]
+        method <- "jw"
+      }
+      
+      if (res != ""){
+        
+        tagList(
+          HTML("<div class=\"panel panel-success\"> <div class=\"panel-heading\"> <h3 class=\"panel-title\">Result selected</h3> </div> <div class=\"panel-body\">"),
+          HTML(paste0("<dl class=\"dl-horizontal\"><dt>Locality</dt><dd>", res, "</dd><dt>Method (and score)</dt><dd>", method, " (", score, ")</dd></dl>")),
+          HTML("</div></div>")
+          
+        )
+      }
       
     })
   })
